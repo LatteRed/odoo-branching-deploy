@@ -5,6 +5,7 @@
     'summary': 'Simple integration module for T29',
     'description': 'Basic integration functionality',
     'author': 'T29 Team',
+    'license': 'LGPL-3',
     'depends': ['base', 't29_custom_one', 't29_custom_2'],
     'data': [
         'security/ir.model.access.csv',
