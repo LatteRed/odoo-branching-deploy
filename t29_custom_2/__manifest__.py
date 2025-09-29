@@ -5,6 +5,7 @@
     'summary': 'Simple partner extensions for T29',
     'description': 'Basic partner extensions with custom fields',
     'author': 'T29 Team',
+    'license': 'LGPL-3',
     'depends': ['base', 't29_custom_one'],
     'data': [
         'security/ir.model.access.csv',
