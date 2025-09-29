@@ -1,0 +1,234 @@
+pipeline {
+    agent any
+    
+    environment {
+        STAGING_VM_IP = '192.168.1.102'
+        STAGING_VM_USER = 'ubuntu'
+        ENVIRONMENT = 'staging'
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo 'Checking out staging branch...'
+                checkout scm
+                sh 'git checkout staging || git checkout -b staging'
+            }
+        }
+        
+        stage('Pre-deployment Validation') {
+            parallel {
+                stage('Code Quality') {
+                    steps {
+                        echo 'Running comprehensive code quality checks...'
+                        sh '''
+                            # Enhanced linting for staging
+                            find t29_custom_* -name "*.py" -exec python3 -m py_compile {} \;
+                            find t29_custom_* -name "*.xml" -exec xmllint --noout {} \;
+                            
+                            # Security checks
+                            echo "Running security checks..."
+                            # Check for hardcoded passwords
+                            if grep -r "password.*=" t29_custom_* --include="*.py"; then
+                                echo "WARNING: Potential hardcoded passwords found"
+                            fi
+                            
+                            # Check for SQL injection patterns
+                            if grep -r "execute.*%" t29_custom_* --include="*.py"; then
+                                echo "WARNING: Potential SQL injection patterns found"
+                            fi
+                        '''
+                    }
+                }
+                stage('Dependency Validation') {
+                    steps {
+                        echo 'Validating module dependencies...'
+                        sh '''
+                            python3 -c "
+                            import ast
+                            import sys
+                            
+                            modules = ['t29_custom_one', 't29_custom_2', 't29_custom_3']
+                            dependencies = {}
+                            
+                            for module in modules:
+                                with open(f'{module}/__manifest__.py', 'r') as f:
+                                    content = f.read()
+                                manifest = ast.literal_eval(content)
+                                dependencies[module] = manifest.get('depends', [])
+                            
+                            # Validate dependency chain
+                            assert 't29_custom_one' in dependencies['t29_custom_2'], 't29_custom_2 must depend on t29_custom_one'
+                            assert 't29_custom_one' in dependencies['t29_custom_3'], 't29_custom_3 must depend on t29_custom_one'
+                            assert 't29_custom_2' in dependencies['t29_custom_3'], 't29_custom_3 must depend on t29_custom_2'
+                            
+                            print('Dependency validation passed!')
+                            "
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('Build Staging Image') {
+            steps {
+                echo 'Building staging Docker image...'
+                sh 'docker build -t t29-odoo-staging:${BUILD_NUMBER} .'
+                sh 'docker tag t29-odoo-staging:${BUILD_NUMBER} t29-odoo-staging:latest'
+            }
+        }
+        
+        stage('Database Backup') {
+            steps {
+                echo 'Creating database backup before deployment...'
+                sshagent(['staging-vm-ssh']) {
+                    sh '''
+                        ssh ${STAGING_VM_USER}@${STAGING_VM_IP} "
+                            cd /opt/t29-odoo-staging
+                            docker-compose -f docker-compose.staging.yml exec -T db pg_dump -U odoo odoo_staging > /backups/backup_before_${BUILD_NUMBER}.sql
+                        "
+                    '''
+                }
+            }
+        }
+        
+        stage('Deploy to Staging') {
+            steps {
+                echo 'Deploying to staging environment...'
+                sshagent(['staging-vm-ssh']) {
+                    sh '''
+                        # Save Docker image
+                        docker save t29-odoo-staging:latest | gzip > /tmp/t29-odoo-staging.tar.gz
+                        
+                        # Transfer to Staging VM
+                        scp /tmp/t29-odoo-staging.tar.gz ${STAGING_VM_USER}@${STAGING_VM_IP}:/tmp/
+                        
+                        # Deploy on Staging VM
+                        ssh ${STAGING_VM_USER}@${STAGING_VM_IP} "
+                            cd /opt/t29-odoo-staging
+                            docker load < /tmp/t29-odoo-staging.tar.gz
+                            docker-compose -f docker-compose.staging.yml down
+                            docker-compose -f docker-compose.staging.yml up -d
+                        "
+                        
+                        # Cleanup
+                        rm /tmp/t29-odoo-staging.tar.gz
+                    '''
+                }
+            }
+        }
+        
+        stage('Staging Health Check') {
+            steps {
+                echo 'Performing staging health checks...'
+                sh '''
+                    # Wait for services to start
+                    sleep 60
+                    
+                    # Health check with retries
+                    for i in {1..10}; do
+                        echo "Health check attempt $i/10..."
+                        if curl -f http://${STAGING_VM_IP}:8069/web/health; then
+                            echo "Staging health check passed!"
+                            break
+                        fi
+                        echo "Health check failed, waiting 30 seconds..."
+                        sleep 30
+                    done
+                '''
+            }
+        }
+        
+        stage('Module Installation Test') {
+            steps {
+                echo 'Testing module installation in staging...'
+                sh '''
+                    ssh ${STAGING_VM_USER}@${STAGING_VM_IP} "
+                        cd /opt/t29-odoo-staging
+                        
+                        # Install modules in correct order
+                        echo 'Installing t29_custom_one...'
+                        docker-compose -f docker-compose.staging.yml exec -T odoo odoo -d odoo_staging -i t29_custom_one --stop-after-init
+                        
+                        echo 'Installing t29_custom_2...'
+                        docker-compose -f docker-compose.staging.yml exec -T odoo odoo -d odoo_staging -i t29_custom_2 --stop-after-init
+                        
+                        echo 'Installing t29_custom_3...'
+                        docker-compose -f docker-compose.staging.yml exec -T odoo odoo -d odoo_staging -i t29_custom_3 --stop-after-init
+                        
+                        echo 'Updating all modules...'
+                        docker-compose -f docker-compose.staging.yml exec -T odoo odoo -d odoo_staging -u all --stop-after-init
+                    "
+                '''
+            }
+        }
+        
+        stage('Staging Tests') {
+            parallel {
+                stage('Functional Tests') {
+                    steps {
+                        echo 'Running functional tests...'
+                        sh '''
+                            # Test basic Odoo functionality
+                            curl -f http://${STAGING_VM_IP}:8069/web/database/selector
+                            
+                            # Test custom module endpoints
+                            ssh ${STAGING_VM_USER}@${STAGING_VM_IP} "
+                                cd /opt/t29-odoo-staging
+                                docker-compose -f docker-compose.staging.yml exec -T odoo odoo -d odoo_staging --test-enable --stop-after-init
+                            "
+                        '''
+                    }
+                }
+                stage('Performance Tests') {
+                    steps {
+                        echo 'Running performance tests...'
+                        sh '''
+                            # Basic performance check
+                            time curl -f http://${STAGING_VM_IP}:8069/web/health
+                            
+                            # Check database performance
+                            ssh ${STAGING_VM_USER}@${STAGING_VM_IP} "
+                                cd /opt/t29-odoo-staging
+                                docker-compose -f docker-compose.staging.yml exec -T db psql -U odoo -d odoo_staging -c 'SELECT version();'
+                            "
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('User Acceptance Testing') {
+            steps {
+                echo 'Preparing for User Acceptance Testing...'
+                sh '''
+                    # Create test data
+                    ssh ${STAGING_VM_USER}@${STAGING_VM_IP} "
+                        cd /opt/t29-odoo-staging
+                        docker-compose -f docker-compose.staging.yml exec -T odoo odoo -d odoo_staging --init=base --stop-after-init
+                    "
+                    
+                    echo "Staging environment ready for UAT!"
+                    echo "Access URL: http://${STAGING_VM_IP}:8069"
+                '''
+            }
+        }
+    }
+    
+    post {
+        success {
+            echo 'Staging deployment successful!'
+            // Send notification to QA team
+            // Create staging report
+        }
+        failure {
+            echo 'Staging deployment failed!'
+            // Send notification to development team
+            // Rollback if needed
+        }
+        always {
+            // Cleanup
+            sh 'docker rmi t29-odoo-staging:${BUILD_NUMBER} || true'
+        }
+    }
+}

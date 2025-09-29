@@ -1,0 +1,159 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: odoo-db-staging
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-odoo_staging}
+      POSTGRES_USER: ${POSTGRES_USER:-odoo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-staging_password}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - db-data-staging:/var/lib/postgresql/data
+      - ./config/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./backups:/backups
+    ports:
+      - "5434:5432"
+    networks:
+      - odoo-staging-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-odoo} -d ${POSTGRES_DB:-odoo_staging}"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  odoo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: t29-odoo-staging:latest
+    container_name: odoo-app-staging
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      HOST: db
+      USER: ${ODOO_DB_USER:-odoo}
+      PASSWORD: ${ODOO_DB_PASSWORD:-staging_password}
+      DATABASE: ${POSTGRES_DB:-odoo_staging}
+      ADMIN_PASSWORD: ${ODOO_ADMIN_PASSWORD:-staging123}
+      # Staging specific settings
+      ODOO_DEBUG: 0
+      ODOO_LOG_LEVEL: info
+    volumes:
+      - odoo-data-staging:/var/lib/odoo
+      - ./logs:/var/log/odoo
+      - ./config/odoo.conf:/etc/odoo/odoo.conf:ro
+    ports:
+      - "8071:8069"
+    networks:
+      - odoo-staging-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8069/web/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  nginx:
+    image: nginx:1.25.2-alpine
+    container_name: odoo-nginx-staging
+    restart: unless-stopped
+    ports:
+      - "8082:80"
+      - "8443:443"
+    volumes:
+      - ./config/nginx-staging.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/logs:/var/log/nginx
+    depends_on:
+      - odoo
+    networks:
+      - odoo-staging-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: odoo-redis-staging
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data-staging:/data
+    ports:
+      - "6381:6379"
+    networks:
+      - odoo-staging-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Staging monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus-staging
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data-staging:/prometheus
+    networks:
+      - odoo-staging-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana-staging
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: staging123
+    volumes:
+      - grafana-data-staging:/var/lib/grafana
+    networks:
+      - odoo-staging-network
+    depends_on:
+      - prometheus
+
+  backup:
+    image: postgres:15-alpine
+    container_name: odoo-backup-staging
+    restart: "no"
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:-staging_password}
+    volumes:
+      - ./backups:/backups
+      - ./scripts/backup.sh:/backup.sh:ro
+    depends_on:
+      - db
+    networks:
+      - odoo-staging-network
+    command: /bin/sh -c "while true; do sleep 86400; done"
+
+volumes:
+  db-data-staging:
+    driver: local
+  odoo-data-staging:
+    driver: local
+  redis-data-staging:
+    driver: local
+  prometheus-data-staging:
+    driver: local
+  grafana-data-staging:
+    driver: local
+
+networks:
+  odoo-staging-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.23.0.0/16
