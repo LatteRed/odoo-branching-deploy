@@ -5,6 +5,7 @@
     'summary': 'Simple CRM extensions for T29',
     'description': 'Basic CRM lead extensions with custom fields',
     'author': 'T29 Team',
+    'license': 'LGPL-3',
     'depends': ['base', 'crm'],
     'data': [
         'security/ir.model.access.csv',

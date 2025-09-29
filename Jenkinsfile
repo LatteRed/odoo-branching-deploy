@@ -7,19 +7,16 @@ pipeline {
                 echo 'Checking out code...'
                 checkout scm
                 script {
-                    // Try to get branch name from various sources
                     if (env.BRANCH_NAME) {
-                        echo "Using Jenkins BRANCH_NAME: ${env.BRANCH_NAME}"
+                        echo "Branch: ${env.BRANCH_NAME}"
                     } else if (env.CHANGE_BRANCH) {
                         env.BRANCH_NAME = env.CHANGE_BRANCH
-                        echo "Using CHANGE_BRANCH: ${env.BRANCH_NAME}"
+                        echo "Branch: ${env.BRANCH_NAME}"
                     } else {
-                        // Fallback: try to determine from git
                         def branchName = sh(script: 'git branch -r --contains HEAD | head -1 | sed "s/origin\\///"', returnStdout: true).trim()
                         env.BRANCH_NAME = branchName ?: 'main'
-                        echo "Using git fallback: ${env.BRANCH_NAME}"
+                        echo "Branch: ${env.BRANCH_NAME}"
                     }
-                    echo "Current branch: ${env.BRANCH_NAME}"
                 }
             }
         }
