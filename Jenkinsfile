@@ -1,6 +1,9 @@
 pipeline {
     agent any
     
+    // Test build trigger - small change to test CI/CD
+    // Added via feature branch workflow
+    
     stages {
         stage('Checkout') {
             steps {
