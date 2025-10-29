@@ -89,7 +89,7 @@ networks:
     driver: bridge
     ipam:
       config:
-        - subnet: ${SUBNET}
+        - subnet: \${SUBNET}
 EOF
 
                     echo "Override file created:"
@@ -190,5 +190,6 @@ EOF
         }
     }
 }
+
 
 
