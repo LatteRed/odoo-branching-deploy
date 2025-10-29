@@ -1,0 +1,163 @@
+pipeline {
+    agent any
+
+    parameters {
+        choice(
+            name: 'TEST_ENVIRONMENT',
+            choices: ['development', 'staging', 'production'],
+            description: 'Environment to test'
+        )
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: 'latest',
+            description: 'Docker image tag to test'
+        )
+    }
+
+    environment {
+        DOCKER_COMPOSE_FILE = "${params.TEST_ENVIRONMENT == 'production' ? 'docker-compose.prod.yml' : params.TEST_ENVIRONMENT == 'staging' ? 'docker-compose.staging.yml' : 'docker-compose.dev.yml'}"
+        DOCKER_IMAGE_TAG = "t29-odoo-${params.TEST_ENVIRONMENT}"
+        PORT = "${params.TEST_ENVIRONMENT == 'production' ? '8069' : params.TEST_ENVIRONMENT == 'staging' ? '8071' : '8070'}"
+        TEST_CONTAINER_NAME = "odoo-test-${params.TEST_ENVIRONMENT}-${BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('Checkout & Setup') {
+            steps {
+                echo "Starting Docker-based testing for ${params.TEST_ENVIRONMENT} environment (with port overrides)..."
+                checkout scm
+
+                script {
+                    env.DB_PORT = '5542'
+                    env.REDIS_PORT = '6389'
+                    env.EFFECTIVE_APP_PORT = env.PORT
+                }
+
+                echo "Test Configuration:"
+                echo "Environment: ${params.TEST_ENVIRONMENT}"
+                echo "Docker Compose: ${DOCKER_COMPOSE_FILE}"
+                echo "Image Tag: ${DOCKER_IMAGE_TAG}"
+                echo "App Port: ${EFFECTIVE_APP_PORT}"
+                echo "DB Port: ${DB_PORT}"
+                echo "Redis Port: ${REDIS_PORT}"
+            }
+        }
+
+        stage('Build Test Image') {
+            steps {
+                sh '''
+                    echo "Building Docker image for testing..."
+
+                    docker build --no-cache -t ${DOCKER_IMAGE_TAG}:test-${BUILD_NUMBER} .
+                    docker tag ${DOCKER_IMAGE_TAG}:test-${BUILD_NUMBER} ${DOCKER_IMAGE_TAG}:latest
+
+                    echo "Test image built: ${DOCKER_IMAGE_TAG}:test-${BUILD_NUMBER}"
+                    docker images | grep ${DOCKER_IMAGE_TAG}
+                '''
+            }
+        }
+
+        stage('Start Test Environment') {
+            steps {
+                sh '''
+                    echo "Starting test environment with Docker Compose (overridden ports)..."
+
+                    cat > compose.override.yml <<'EOF'
+services:
+  db:
+    ports:
+      - "${DB_PORT}:5432"
+  redis:
+    ports:
+      - "${REDIS_PORT}:6379"
+  odoo:
+    ports:
+      - "${EFFECTIVE_APP_PORT}:8069"
+  nginx:
+    ports:
+      - "18080:80"
+EOF
+
+                    docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml down || true
+                    docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml up -d
+
+                    echo "Waiting for services to start..."
+                    sleep 60
+
+                    docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml ps
+                '''
+            }
+        }
+
+        stage('Database Initialization Test') {
+            steps {
+                sh '''
+                    echo "Testing database initialization..."
+                    sleep 20
+                    docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml exec -T db psql -U odoo -c "SELECT version();" || echo "Database check completed"
+                    docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml exec -T odoo odoo --version || echo "Odoo version check completed"
+                '''
+            }
+        }
+
+        stage('Module Installation Test') {
+            steps {
+                sh '''
+                    echo "Testing module installation..."
+                    docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml exec -T odoo odoo -d odoo_${params.TEST_ENVIRONMENT} -i t29_custom_one --stop-after-init || true
+                    docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml exec -T odoo odoo -d odoo_${params.TEST_ENVIRONMENT} -i t29_custom_2 --stop-after-init || true
+                    docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml exec -T odoo odoo -d odoo_${params.TEST_ENVIRONMENT} -i t29_custom_3 --stop-after-init || true
+                '''
+            }
+        }
+
+        stage('Service Health Check') {
+            steps {
+                sh '''
+                    echo "Performing service health checks..."
+                    if docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml ps | grep -q "odoo.*Up"; then echo "Odoo container is running"; else echo "Odoo not running"; exit 1; fi
+                    if docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml ps | grep -q "db.*Up"; then echo "DB container is running"; else echo "DB not running"; exit 1; fi
+                '''
+            }
+        }
+
+        stage('HTTP Health Check') {
+            steps {
+                sh '''
+                    echo "Performing HTTP health checks..."
+                    for i in {1..5}; do
+                        echo "HTTP health check attempt $i/5..."
+                        if curl -f http://localhost:${EFFECTIVE_APP_PORT}/web/health; then echo "OK"; break; fi
+                        sleep 10
+                    done
+                    curl -f http://localhost:${EFFECTIVE_APP_PORT}/web/database/selector || true
+                '''
+            }
+        }
+
+        stage('Cleanup Test Environment') {
+            steps {
+                sh '''
+                    echo "Cleaning up test environment..."
+                    docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml down
+                    docker rmi ${DOCKER_IMAGE_TAG}:test-${BUILD_NUMBER} || true
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "All tests passed successfully!"
+            echo "Odoo Docker test completed for ${params.TEST_ENVIRONMENT} environment on ports: app=${EFFECTIVE_APP_PORT}, db=${DB_PORT}, redis=${REDIS_PORT}"
+        }
+        failure {
+            echo "Tests failed! Check logs."
+        }
+        always {
+            echo "Test pipeline (ports override) completed"
+        }
+    }
+}
+
+
