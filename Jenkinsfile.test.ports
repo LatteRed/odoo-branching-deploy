@@ -62,6 +62,11 @@ pipeline {
                 sh """
                     echo "Starting test environment with Docker Compose (overridden ports)..."
 
+                    # Clean up any existing test networks first
+                    echo "Cleaning up existing test networks..."
+                    docker network ls --format "{{.Name}}" | grep -E "test-.*-.*-network" | xargs -r docker network rm 2>/dev/null || true
+                    docker network ls --format "{{.Name}}" | grep -E ".*_odoo.*network" | xargs -r docker network rm 2>/dev/null || true
+
                     # Create unique project name
                     PROJECT_NAME="test-${BUILD_NUMBER}-${params.TEST_ENVIRONMENT}"
                     
@@ -100,7 +105,14 @@ EOF
                     export COMPOSE_PROJECT_NAME="\${PROJECT_NAME}"
                     
                     docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml down || true
-                    docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml up -d
+                    
+                    # Try with custom subnet first
+                    if ! docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml up -d; then
+                        echo "Custom subnet failed, trying with Docker auto-assigned subnet..."
+                        # Remove custom subnet and let Docker choose
+                        sed -i '/ipam:/,+2d' compose.override.yml
+                        docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml up -d
+                    fi
 
                     echo "Waiting for services to start..."
                     sleep 60
