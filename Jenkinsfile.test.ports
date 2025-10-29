@@ -62,7 +62,7 @@ pipeline {
                 sh '''
                     echo "Starting test environment with Docker Compose (overridden ports)..."
 
-                    cat > compose.override.yml <<'EOF'
+                    cat > compose.override.yml <<EOF
 services:
   db:
     ports:
@@ -77,6 +77,9 @@ services:
     ports:
       - "18080:80"
 EOF
+
+                    echo "Override file created:"
+                    cat compose.override.yml
 
                     docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml down || true
                     docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml up -d
