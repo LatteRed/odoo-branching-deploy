@@ -65,8 +65,9 @@ pipeline {
                     # Create unique project name
                     PROJECT_NAME="test-${BUILD_NUMBER}-${params.TEST_ENVIRONMENT}"
                     
-                    # Generate unique subnet based on build number
-                    SUBNET_OFFSET=\$((100 + ${BUILD_NUMBER} % 50))
+                    # Generate unique subnet based on build number and timestamp
+                    TIMESTAMP=\$(date +%s)
+                    SUBNET_OFFSET=\$((200 + ${BUILD_NUMBER} % 50 + TIMESTAMP % 10))
                     SUBNET="172.\${SUBNET_OFFSET}.0.0/16"
                     
                     cat > compose.override.yml <<EOF
