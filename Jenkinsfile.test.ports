@@ -63,10 +63,10 @@ pipeline {
                     echo "Starting test environment with Docker Compose (overridden ports)..."
 
                     # Create unique project name
-                    PROJECT_NAME="test-\${BUILD_NUMBER}-\${params.TEST_ENVIRONMENT}"
+                    PROJECT_NAME="test-${BUILD_NUMBER}-${params.TEST_ENVIRONMENT}"
                     
                     # Generate unique subnet based on build number
-                    SUBNET_OFFSET=\$((100 + \${BUILD_NUMBER} % 50))
+                    SUBNET_OFFSET=\$((100 + ${BUILD_NUMBER} % 50))
                     SUBNET="172.\${SUBNET_OFFSET}.0.0/16"
                     
                     cat > compose.override.yml <<EOF
@@ -159,10 +159,10 @@ EOF
             steps {
                 sh """
                     echo "Cleaning up test environment..."
-                    PROJECT_NAME="test-\${BUILD_NUMBER}-\${params.TEST_ENVIRONMENT}"
+                    PROJECT_NAME="test-${BUILD_NUMBER}-${params.TEST_ENVIRONMENT}"
                     export COMPOSE_PROJECT_NAME="\${PROJECT_NAME}"
                     docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml down
-                    docker rmi \${DOCKER_IMAGE_TAG}:test-\${BUILD_NUMBER} || true
+                    docker rmi \${DOCKER_IMAGE_TAG}:test-${BUILD_NUMBER} || true
                     
                     echo "Cleaning up test networks..."
                     # Remove test networks (ignore errors if they don't exist)
@@ -190,6 +190,5 @@ EOF
         }
     }
 }
-
 
 
