@@ -62,6 +62,9 @@ pipeline {
                 sh '''
                     echo "Starting test environment with Docker Compose (overridden ports)..."
 
+                    # Create unique project name
+                    PROJECT_NAME="test-${BUILD_NUMBER}-${params.TEST_ENVIRONMENT}"
+                    
                     cat > compose.override.yml <<EOF
 services:
   db:
@@ -78,14 +81,14 @@ services:
       - "18080:80"
 networks:
   default:
-    name: test-${BUILD_NUMBER}-${params.TEST_ENVIRONMENT}
+    name: ${PROJECT_NAME}
 EOF
 
                     echo "Override file created:"
                     cat compose.override.yml
 
                     # Use project name to avoid conflicts
-                    export COMPOSE_PROJECT_NAME="test-${BUILD_NUMBER}-${params.TEST_ENVIRONMENT}"
+                    export COMPOSE_PROJECT_NAME="${PROJECT_NAME}"
                     
                     docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml down || true
                     docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml up -d
@@ -148,13 +151,14 @@ EOF
             steps {
                 sh '''
                     echo "Cleaning up test environment..."
-                    export COMPOSE_PROJECT_NAME="test-${BUILD_NUMBER}-${params.TEST_ENVIRONMENT}"
+                    PROJECT_NAME="test-${BUILD_NUMBER}-${params.TEST_ENVIRONMENT}"
+                    export COMPOSE_PROJECT_NAME="${PROJECT_NAME}"
                     docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml down
                     docker rmi ${DOCKER_IMAGE_TAG}:test-${BUILD_NUMBER} || true
                     
                     echo "Cleaning up test networks..."
                     # Remove test networks (ignore errors if they don't exist)
-                    docker network rm test-${BUILD_NUMBER}-${params.TEST_ENVIRONMENT} 2>/dev/null || true
+                    docker network rm ${PROJECT_NAME} 2>/dev/null || true
                     docker network rm test_main_odoo-network 2>/dev/null || true
                     docker network rm test_staging_odoo-network 2>/dev/null || true
                     docker network rm test_development_odoo-network 2>/dev/null || true
