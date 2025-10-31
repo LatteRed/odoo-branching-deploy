@@ -70,32 +70,31 @@ pipeline {
                     # Create unique project name
                     PROJECT_NAME="test-${BUILD_NUMBER}-${params.TEST_ENVIRONMENT}"
                     
-                    # Generate unique subnet based on build number and timestamp
-                    TIMESTAMP=\$(date +%s)
-                    SUBNET_OFFSET=\$((200 + ${BUILD_NUMBER} % 50 + TIMESTAMP % 10))
-                    SUBNET="172.\${SUBNET_OFFSET}.0.0/16"
+                    # Precreate an external network to avoid Docker IPAM overlaps
+                    docker network create "\${PROJECT_NAME}" 2>/dev/null || true
                     
                     cat > compose.override.yml <<EOF
 services:
   db:
+    container_name: "db-\${PROJECT_NAME}"
     ports:
       - "${DB_PORT}:5432"
   redis:
+    container_name: "redis-\${PROJECT_NAME}"
     ports:
       - "${REDIS_PORT}:6379"
   odoo:
+    container_name: "odoo-\${PROJECT_NAME}"
     ports:
       - "${EFFECTIVE_APP_PORT}:8069"
   nginx:
+    container_name: "nginx-\${PROJECT_NAME}"
     ports:
       - "18080:80"
 networks:
   default:
+    external: true
     name: \${PROJECT_NAME}
-    driver: bridge
-    ipam:
-      config:
-        - subnet: \${SUBNET}
 EOF
 
                     echo "Override file created:"
@@ -105,14 +104,7 @@ EOF
                     export COMPOSE_PROJECT_NAME="\${PROJECT_NAME}"
                     
                     docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml down || true
-                    
-                    # Try with custom subnet first
-                    if ! docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml up -d; then
-                        echo "Custom subnet failed, trying with Docker auto-assigned subnet..."
-                        # Remove custom subnet and let Docker choose
-                        sed -i '/ipam:/,+2d' compose.override.yml
-                        docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml up -d
-                    fi
+                    docker-compose -f ${DOCKER_COMPOSE_FILE} -f compose.override.yml up -d
 
                     echo "Waiting for services to start..."
                     sleep 60
